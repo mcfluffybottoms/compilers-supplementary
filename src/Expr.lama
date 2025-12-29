@@ -81,6 +81,7 @@ fun addDecs (state, decs) {
    foldl(fun (s, dec) {
         case dec of
           Var(names)            -> s.addNames(names)
+        | Val(names)            -> s.addNames(names)
         | Fun(name, args, body) -> s.addFunction(name, args, body)
         esac
      }, state, decs)
@@ -91,65 +92,112 @@ fun addArgs (state, args, vals) {
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
-  case foldl (fun ([c, vals], e) {
-                case eval (c, e) of
-                  [c, vl] -> [c, vl : vals]
-                esac
-              },
-              [c, {}],
-              exprs) of
-    [c, vals] -> [c, reverse (vals)]
-  esac
+   case foldl(fun ([c, vals], e) {
+             case eval(c, e) of
+               [c, vl] -> [c, vl : vals]
+             esac
+          }, [c, {}], exprs) of
+     [c, vals] -> [c, reverse(vals)]
+   esac
+}
+fun matchValue (value, pattern) {
+   case pattern of
+     Sexp(name, ps) -> case value of
+                         Sexp(vname, values) -> compare(name, vname) == 0 && matchValues(arrayList(values), ps)
+                       | _                   -> false
+                       esac
+   | Array(ps)      -> case value of
+                         x@#array -> matchValues(arrayList(x), ps)
+                       | _        -> false
+                       esac
+   | WILDCARD       -> true
+   | x@#val         -> case value of
+                         value@#val -> value == x
+                       | _          -> false
+                       esac
+   esac
+}
+fun matchValues (values, patterns) {
+   case values of
+     {}        -> case patterns of
+                    {} -> true
+                  | _  -> false
+                  esac
+   | v: values -> case patterns of
+                    {}          -> false
+                  | p: patterns -> matchValue(v, p) && matchValues(values, patterns)
+                  esac
+   esac
 }
 fun eval (c@[s, w], expr) {
    case expr of
-     Var(v)                  -> lookupVal(s, v);
-                                let Val(x) = lookup(s, v) in [c, x]
-   | Ref(r)                  -> lookupVal(s, r);
-                                [c, Ref(r)]
-   | String(s)               -> [c, s]
-   | Elem(arr, i)            -> let [c, arr] = eval(c, arr) in
-                                   let [c, i] = eval(c, i) in
-                                      let arr = case arr of
-                                                  Sexp(_, arr) -> arr
-                                                | arr          -> arr
-                                                esac in [c, arr[i]]
-   | Const(i)                -> [c, i]
-   | Skip                    -> [c, None]
-   | Binop(op, expr1, expr2) -> let [c, {l, r}] = evalList(c, {expr1, expr2}) in [c, evalOp(op, l, r)]
-   | Assn(expr1, expr2)      -> let [[s, w], {ref, v}] = evalList(c, {expr1, expr2}) in
-                                   case ref of
-                                     Ref(r)            -> lookupVal(s, r);
-                                                          [[s <- [r, Val(v)], w], v]
-                                   | ElemRef(arr, idx) -> arr[idx] := v;
-                                                          [[s, w], v]
-                                   esac
-   | Set(vr, expr)           -> let [[s, w], v] = eval(c, expr) in 
-                                   [[s <- [vr, Val(v)], w], v]
-   | ElemRef(arr, i)         -> let [c, arr] = eval(c, arr) in
-                                   let [c, i] = eval(c, i) in
-                                      let arr = case arr of
-                                                  Sexp(_, arr) -> arr
-                                                | arr          -> arr
-                                                esac in [c, ElemRef(arr, i)]
-   | Sexp(tag, exprs)        -> let [c, args] = evalList(c, exprs) in [c, Sexp(tag, listArray(args))]
-   | Seq(expr1, expr2)       -> let [c, v] = eval(c, expr1) in eval(c, expr2)
-   | If(cond, expr1, expr2)  -> let [c, v] = eval(c, cond) in if v then eval(c, expr1) else eval(c, expr2) fi
-   | While(cond, expr)       -> case eval(c, cond) of
-                                  [c, 0] -> [c, None]
-                                | [c, _] -> let [c, _] = eval(c, expr) in eval(c, While(cond, expr))
-                                esac
-   | DoWhile(cond, expr)     -> eval(c, Seq(expr, While(cond, expr)))
-   | Ignore(expr)            -> [eval(c, expr)[0], None]
-   | Scope(d, e)             -> let [[s, w], v] = eval([s.enterScope.addDecs(d), w], e) in [[s.leaveScope, w], v]
-   | Call(f, expr)           -> lookupFun(s, f);
-                                let [[s, w], vals] = evalList(c, expr) in
-                                   let Fun(args, body) = lookup(s, f) in
-                                      let [[ss, w], v] = eval([s.enterFunction.addArgs(args, vals), w], body) in
-                                         [[leaveFunction(s, getGlobal(ss)), w], v]
-   | Builtin(f, expr)        -> let [[s, w], vals] = evalList(c, expr) in let [v, w] = evalBuiltin(f, vals, w) in [[s, w], v]
-   | Array(exprs)            -> let [c, vals] = evalList(c, exprs) in [c, listArray(vals)]
-   | _                       -> failure("yo dumbass in expr.lama %s \n", expr.string)
+     Var(v)                   -> let Val(v) = lookupVal(s, v) in [c, v]
+   | Ref(r)                   -> [c, Ref(r)]
+   | String(s)                -> [c, s]
+   | Elem(arr, i)             -> let [c, arr] = eval(c, arr) in
+                                    let [c, i] = eval(c, i) in
+                                       let arr = case arr of
+                                                   Sexp(_, arr) -> arr
+                                                 | arr          -> arr
+                                                 esac in [c, arr[i]]
+   | Const(i)                 -> [c, i]
+   | Skip                     -> [c, None]
+   | Binop(op, expr1, expr2)  -> let [c, {l, r}] = evalList(c, {expr1, expr2}) in [c, evalOp(op, l, r)]
+   | Assn(expr1, expr2)       -> let [[s, w], {ref, v}] = evalList(c, {expr1, expr2}) in
+                                    case ref of
+                                      Ref(r)            -> [[s <- [r, Val(v)], w], v]
+                                    | ElemRef(arr, idx) -> arr[idx] := v;
+                                                           [[s, w], v]
+                                    esac
+   | Set(vr, expr)            -> let [[s, w], {Ref(x), v}] = evalList(c, {vr, expr}) in [[s <- [x, Val(v)], w], v]
+   | ElemRef(arr, i)          -> let [c, arr] = eval(c, arr) in
+                                    let [c, i] = eval(c, i) in
+                                       let arr = case arr of
+                                                   Sexp(_, arr) -> arr
+                                                 | arr          -> arr
+                                                 esac in [c, ElemRef(arr, i)]
+   | Sexp(tag, exprs)         -> let [c, args] = evalList(c, exprs) in [c, Sexp(tag, listArray(args))]
+   | Seq(expr1, expr2)        -> let [c, v] = eval(c, expr1) in eval(c, expr2)
+   | If(cond, expr1, expr2)   -> let [c, v] = eval(c, cond) in if v then eval(c, expr1) else eval(c, expr2) fi
+   | While(cond, expr)        -> case eval(c, cond) of
+                                   [c, 0] -> [c, None]
+                                 | [c, _] -> let [c, _] = eval(c, expr) in eval(c, While(cond, expr))
+                                 esac
+   | DoWhile(cond, expr)      -> eval(c, Seq(expr, While(cond, expr)))
+   | Ignore(expr)             -> [eval(c, expr)[0], None]
+   | Scope(d, e)              -> let [[s, w], v] = eval([s.enterScope.addDecs(d), w], e) in [[s.leaveScope, w], v]
+   | Array(exprs)             -> let [c, vals] = evalList(c, exprs) in [c, listArray(vals)]
+   | Call(fn, expr)           -> let f@Fun(args, body) = lookup(s, fn) in
+                                    let [[s, w], vals] = evalList(c, expr) in
+                                       case body of
+                                         External -> let [v, w] = evalBuiltin(fn, vals, w) in [[s, w], v]
+                                       | _        -> let [[ss, w], v] = eval([s.enterFunction.addArgs(args, vals), w],
+                                                                          body) in [[leaveFunction(s, getGlobal(ss)), w], v]
+                                       esac
+   | CaseOf(name, pairs, loc) -> let Val(v) = lookupVal(s, name) in
+                                    (
+                                       var finished = false;
+                                       var rest = pairs;
+                                       var result;
+                                       
+                                       while 1 - finished do
+                                          case rest of
+                                            {} -> error("match failure at ", loc)
+                                          | _  -> skip
+                                          esac;
+                                          let hd: tl = rest in
+                                             (
+                                                if matchValue(v, hd[0])
+                                                then 
+                                                   finished := true;
+                                                   let [c, v] = eval(c, hd[1]) in result := [c, v]
+                                                else rest := tl
+                                                fi
+                                             )
+                                       od;
+                                       result
+                                    )
+   | _                        -> failure("yo dumbass in expr.lama %s \n", expr.string)
    esac
 }
 -- Evaluates a program with a given input and returns an output
